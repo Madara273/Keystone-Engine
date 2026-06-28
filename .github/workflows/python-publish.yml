@@ -11,10 +11,10 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
         platform: [x32, x64]
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: '3.x'
 
@@ -27,46 +27,57 @@ jobs:
     - name: Set up MSVC x64
       if: matrix.os == 'windows-latest' && matrix.platform == 'x64'
       uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: amd64
+
+    - name: Install Multilib Dependencies (Ubuntu x32)
+      if: matrix.os == 'ubuntu-latest' && matrix.platform == 'x32'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-multilib g++-multilib
 
     - name: Install dependencies
       run: |
         pip install setuptools wheel
 
-    - name: Build distribution 📦
-      shell: bash 
+    - name: Patch RISCVAsmBackend
+      shell: bash
       run: |
+        find . -name "RISCVAsmBackend.h" -exec sed -i 's/array_lengthof(Infos)/sizeof(Infos) \/ sizeof(Infos\[0\])/g' {} + || true
+
+    - name: Build distribution 📦
+      shell: bash
+      run: |
+        cd bindings/python
         if [ ${{ matrix.platform }} == 'x32' ] && [ ${{ matrix.os }} == 'windows-latest' ]; then
-             cd bindings/python && python setup.py build -p win32 bdist_wheel -p win32
+          python setup.py build -p win32 bdist_wheel -p win32
+        elif [ ${{ matrix.platform }} == 'x64' ] && [ ${{ matrix.os }} == 'windows-latest' ]; then
+          python setup.py build -p win64 bdist_wheel -p win64
         elif [ ${{ matrix.platform }} == 'x32' ] && [ ${{ matrix.os }} == 'ubuntu-latest' ]; then
-             docker run --rm -v `pwd`/:/work dockcross/manylinux1-x86 > ./dockcross
-             chmod +x ./dockcross
-             ./dockcross bindings/python/build_wheel.sh
-        elif [ ${{ matrix.platform }} == 'x64' ] && [ ${{ matrix.os }} == 'ubuntu-latest' ]; then
-             docker run --rm -v `pwd`/:/work dockcross/manylinux1-x64 > ./dockcross
-             chmod +x ./dockcross
-             ./dockcross bindings/python/build_wheel.sh
+          CFLAGS="-m32" CXXFLAGS="-m32" python setup.py bdist_wheel
         elif [ ${{ matrix.platform }} == 'x32' ] && [ ${{ matrix.os }} == 'macos-latest' ]; then
-             cd bindings/python && python setup.py sdist
+          python setup.py sdist
         else
-             cd bindings/python && python setup.py bdist_wheel
+          python setup.py bdist_wheel
         fi
 
-    - uses: actions/upload-artifact@v2
+    - uses: actions/upload-artifact@v4
       with:
-         path: ${{ github.workspace }}/bindings/python/dist/*
+        name: artifact-${{ matrix.os }}-${{ matrix.platform }}
+        path: ${{ github.workspace }}/bindings/python/dist/*
 
   publish:
     needs: [build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags')
     steps:
-      - uses: actions/download-artifact@v2
+      - uses: actions/download-artifact@v4
         with:
-          name: artifact
           path: dist
+          merge-multiple: true
 
       - name: Publish distribution 📦 to test PyPI
-        uses: pypa/gh-action-pypi-publish@master
+        uses: pypa/gh-action-pypi-publish@v1.12.4
         with:
           user: __token__
           password: ${{ secrets.testpypi_pass }}
@@ -74,7 +85,8 @@ jobs:
 
       - name: Publish distribution 📦 to PyPI
         if: ${{ success() }}
-        uses: pypa/gh-action-pypi-publish@master
+        uses: pypa/gh-action-pypi-publish@v1.12.4
         with:
           user: __token__
           password: ${{ secrets.pypi_pass }}
+
